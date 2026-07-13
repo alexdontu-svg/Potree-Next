@@ -65,4 +65,3 @@ http://127.0.0.1:8080/potree-net.html?cloud=./cale/metadata.json&project=NUME
 - `V`: adaugă vârf;
 - `Esc`: stop;
 - `W/A/S/D`, `Q/E`, `Shift`: navigare.
-
