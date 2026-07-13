@@ -5,6 +5,7 @@ import {PointCloudOctree, REFINEMENT, PointCloudOctreeNode} from "potree";
 import {WorkerPool} from "potree";
 import {Geometry} from "potree";
 import {MAPPINGS} from "potree";
+import {extractTightBounds, toLocalBounds} from "./metadataBounds.js";
 
 let nodesLoading = 0;
 
@@ -326,6 +327,9 @@ export class PotreeLoader{
 		loader.scale = metadata.scale;
 		loader.offset = metadata.offset;
 
+		let tightBounds = extractTightBounds(metadata);
+		let localTightBounds = toLocalBounds(tightBounds, metadata.boundingBox.min);
+
 		let octree = new PointCloudOctree();
 		octree.url = url;
 		octree.spacing = metadata.spacing;
@@ -336,6 +340,10 @@ export class PotreeLoader{
 		octree.position.copy(octree.boundingBox.min);
 		octree.boundingBox.max.sub(octree.boundingBox.min);
 		octree.boundingBox.min.set(0, 0, 0);
+		octree.tightBoundingBox = new Box3(
+			new Vector3(...localTightBounds.min),
+			new Vector3(...localTightBounds.max),
+		);
 		octree.updateWorld();
 		octree.refinement = REFINEMENT.ADDITIVE;
 

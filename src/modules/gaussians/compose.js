@@ -13,7 +13,7 @@ let shaderCode = `
 		if(index == 2u){ pos = vec4f( 1.0f,  1.0f, 0.0f, 0.0f); }
 		if(index == 3u){ pos = vec4f(-1.0f, -1.0f, 0.0f, 0.0f); }
 		if(index == 4u){ pos = vec4f( 1.0f,  1.0f, 0.0f, 0.0f); }
-		if(index == 5u){ pos = vec4f( 1.0f, -1.0f, 0.0f, 0.0f); }
+		if(index == 5u){ pos = vec4f(-1.0f,  1.0f, 0.0f, 0.0f); }
 		
 		return pos;
 	}

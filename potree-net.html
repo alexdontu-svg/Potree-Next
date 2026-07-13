@@ -11,6 +11,14 @@
 		#project-badge{position:absolute;left:12px;top:12px;z-index:10;padding:8px 11px;border-radius:7px;
 			background:rgba(16,21,28,.88);border:1px solid #364252;color:#e8eef5;font:12px Inter,Segoe UI,sans-serif}
 		#project-badge strong{display:block;font-size:14px}#cloud-status{color:#91a0b3;margin-top:2px}
+		#hybrid-controls{position:absolute;top:12px;right:320px;z-index:10;padding:8px;border-radius:8px;
+			background:rgba(16,21,28,.9);border:1px solid #364252;color:#e8eef5;font:12px Inter,Segoe UI,sans-serif}
+		#hybrid-buttons{display:flex;gap:5px}
+		#hybrid-buttons button{padding:6px 9px;border:1px solid #4b5a6c;border-radius:5px;background:#202b38;color:#cbd5e1;
+			font:600 11px Inter,Segoe UI,sans-serif;cursor:pointer}
+		#hybrid-buttons button:hover{background:#2c3a49}#hybrid-buttons button[aria-pressed="true"]{border-color:#52b8ff;background:#14547b;color:#fff}
+		#layer-status{max-width:280px;margin-top:6px;color:#91a0b3;text-align:right}
+		@media(max-width:900px){#hybrid-controls{top:92px;right:12px}}
 	</style>
 </head>
 <body>
@@ -19,6 +27,14 @@
 		<pre id="msg_resources" hidden></pre>
 		<pre id="msg_dbg" hidden></pre>
 		<div id="project-badge"><strong>11-CORNU · Cârcea</strong><span>Stereo 70 · ridicare 30.06.2026</span><div id="cloud-status">Inițializare WebGPU…</div></div>
+		<div id="hybrid-controls" aria-label="Control straturi 3D">
+			<div id="hybrid-buttons">
+				<button type="button" data-layer-mode="POINTS">POINTS</button>
+				<button type="button" data-layer-mode="SPLATS">SPLATS</button>
+				<button type="button" data-layer-mode="HYBRID">HYBRID</button>
+			</div>
+			<div id="layer-status" role="status">Niciun strat 3D disponibil</div>
+		</div>
 	</div>
 
 	<script type="importmap">
@@ -38,10 +54,18 @@
 	<script type="module">
 		import {Potree, PotreeLoader, SplatType} from "potree";
 		import {Digitizer} from "./src/modules/digitizer/Digitizer.js";
+		import {HybridLayerController, HybridLayerMode} from "./src/modules/hybrid/HybridLayerController.js";
+		import {applySplatPlacement, parseSplatPlacement} from "./src/modules/hybrid/SplatPlacement.js";
 
 		let canvas = document.querySelector("#canvas");
 		let status = document.querySelector("#cloud-status");
+		let layerStatus = document.querySelector("#layer-status");
+		let layerButtons = [...document.querySelectorAll("[data-layer-mode]")];
 		let app = await Potree.init(canvas);
+		app.renderer.device.addEventListener("uncapturederror", event => {
+			console.error("WebGPU uncaptured error", event.error);
+			layerStatus.textContent = `Eroare WebGPU: ${event.error?.message ?? "necunoscută"}`;
+		});
 		window.Potree = Potree;
 		window.potreeNet = app;
 
@@ -55,7 +79,35 @@
 
 		let params = new URLSearchParams(location.search);
 		let cloudUrl = params.get("cloud") ?? "./resources/pointclouds/11-CORNU/metadata.json";
+		let splatUrl = params.get("splat");
 		let projectName = params.get("project") ?? "11-CORNU";
+		let requestedMode = params.get("mode")?.toUpperCase();
+		if(!Object.hasOwn(HybridLayerMode, requestedMode)){
+			requestedMode = splatUrl ? HybridLayerMode.HYBRID : HybridLayerMode.POINTS;
+		}
+
+		let hybridController = new HybridLayerController({
+			mode: requestedMode,
+			onChange: state => {
+				layerStatus.textContent = state.status;
+				for(let button of layerButtons){
+					button.setAttribute("aria-pressed", String(button.dataset.layerMode === state.requestedMode));
+				}
+			},
+		});
+		window.hybridController = hybridController;
+		let loadedPointcloud = null;
+		let loadedSplat = null;
+		for(let button of layerButtons){
+			button.addEventListener("click", () => {
+				const state = hybridController.setMode(button.dataset.layerMode);
+				const focusLayer = state.effectiveMode === HybridLayerMode.SPLATS
+					? loadedSplat
+					: loadedPointcloud;
+				if(focusLayer) app.controls.zoomTo(focusLayer, {zoom: 1.05});
+			});
+		}
+
 		let formatBytes = bytes => `${(bytes / 1_000_000_000).toFixed(2)} GB`;
 
 		async function verifyCloudFiles(metadataUrl){
@@ -78,21 +130,57 @@
 			}
 		}
 
-		try{
-			status.textContent = "Verificare fișiere nor…";
-			await verifyCloudFiles(cloudUrl);
-			status.textContent = "Încărcare nor…";
-			let pointcloud = await PotreeLoader.load(cloudUrl);
-			pointcloud.name = projectName;
-			app.scene.root.children.push(pointcloud);
-			app.controls.zoomTo(pointcloud, {zoom: 1.05});
-			status.textContent = "Nor încărcat · digitizarea este activă";
-		}catch(error){
-			console.warn(error.message);
-			status.textContent = `Eroare nor: ${error.message}`;
+		async function loadPointcloud(){
+			try{
+				status.textContent = "Verificare fișiere nor…";
+				await verifyCloudFiles(cloudUrl);
+				status.textContent = "Încărcare nor…";
+				let pointcloud = await PotreeLoader.load(cloudUrl);
+				loadedPointcloud = pointcloud;
+				pointcloud.name = projectName;
+				app.scene.root.children.push(pointcloud);
+				hybridController.setPointcloud(pointcloud);
+				if(hybridController.getState().effectiveMode !== HybridLayerMode.SPLATS){
+					app.controls.zoomTo(pointcloud, {zoom: 1.05});
+				}
+				status.textContent = "Nor încărcat · digitizarea este activă";
+				return pointcloud;
+			}catch(error){
+				console.warn(error.message);
+				status.textContent = `Eroare nor: ${error.message}`;
+				return null;
+			}
+		}
+
+		async function loadSplat(){
+			if(!splatUrl) return null;
+
+			try{
+				layerStatus.textContent = "Încărcare Gaussian Splats…";
+				const placement = parseSplatPlacement(params);
+				const {GSLoader} = await import("./src/modules/gaussians/GSLoader.js");
+				let splat = await GSLoader.load(splatUrl);
+				loadedSplat = splat;
+				splat.name = `${projectName} · Gaussian Splats`;
+				applySplatPlacement(splat, placement);
+				app.scene.root.children.push(splat);
+				hybridController.setSplat(splat);
+				await splat.loading;
+				if(splat.loadError) throw splat.loadError;
+				if(hybridController.getState().effectiveMode === HybridLayerMode.SPLATS){
+					app.controls.zoomTo(splat, {zoom: 1.05});
+				}
+				return splat;
+			}catch(error){
+				console.warn(error.message);
+				hybridController.setSplat(null);
+				layerStatus.textContent = `Eroare splats · ${hybridController.getState().status}`;
+				return null;
+			}
 		}
 
 		window.digitizer = new Digitizer(app, {container: document.querySelector("#potree-net"), projectName});
+		await Promise.all([loadPointcloud(), loadSplat()]);
 	</script>
 </body>
 </html>

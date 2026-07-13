@@ -3,6 +3,7 @@ import {SceneNode, Vector3, Vector4, Matrix4, Box3, Frustum, EventDispatcher, St
 import {Timer} from "potree";
 import {compose} from "./compose.js";
 import {RadixSortKernel} from "radix-sort-esm";
+import {resolveGaussianRenderCount} from "./GaussianRenderCount.js";
 
 let initializing = false;
 let initialized = false;
@@ -242,7 +243,8 @@ export class GaussianSplats extends SceneNode{
 			view.setFloat32(offset + 8, 10.0, true);
 			view.setUint32 (offset + 12, Potree.state.renderedElements, true);
 			view.setInt32  (offset + 16, this.hoveredIndex ?? -1, true);
-			view.setUint32 (offset + 20, this.numSplats, true);
+			const renderCount = resolveGaussianRenderCount(this.numSplats ?? 0, this.numSplatsUploaded);
+			view.setUint32 (offset + 20, renderCount, true);
 		}
 
 		renderer.device.queue.writeBuffer(uniformsGpuBuffer, 0, uniformsBuffer, 0, uniformsBuffer.byteLength);
@@ -256,6 +258,10 @@ export class GaussianSplats extends SceneNode{
 			return coord;
 		}
 
+	}
+
+	getBoundingBoxWorld(){
+		return this.boundingBox.clone().applyMatrix4(this.world);
 	}
 
 	render(drawstate){
@@ -287,16 +293,6 @@ export class GaussianSplats extends SceneNode{
 		};
 
 		if(this.numSplats === 0) return;
-
-		if(!this.radixSortKernel || this.radixSortKernel.count != this.numSplats){
-			this.radixSortKernel = new RadixSortKernel({
-				device,
-				keys: splatSortKeys,
-				values: splatSortValues,
-				count: this.numSplats,
-				bit_count: 32,
-			})
-		}
 
 		// Transfer data to GPU
 		if(this.splatData && splatBuffers.numSplats === 0){
@@ -331,6 +327,21 @@ export class GaussianSplats extends SceneNode{
 			// transfer(splatBuffers.scale, this.splatData.scale);
 		}
 
+		const renderCount = resolveGaussianRenderCount(this.numSplats, this.numSplatsUploaded);
+		if(renderCount === 0) return;
+
+		if(!this.radixSortKernel || this.radixSortKernel.count != renderCount){
+			this.radixSortKernel = new RadixSortKernel({
+				device,
+				keys: splatSortKeys,
+				values: splatSortValues,
+				count: renderCount,
+				bit_count: 32,
+			})
+		}
+
+		this.updateUniforms(drawstate);
+
 		const commandEncoder = renderer.device.createCommandEncoder();
 
 		{ // SORT
@@ -349,7 +360,7 @@ export class GaussianSplats extends SceneNode{
 
 			pass.setPipeline(pipeline_depth);
 			pass.setBindGroup(0, bindGroup);
-			let numGroups = Math.ceil(Math.sqrt(this.numSplats / 256));
+			let numGroups = Math.ceil(Math.sqrt(renderCount / 256));
 			pass.dispatchWorkgroups(numGroups, numGroups, 1);
 
 			// then sort
@@ -361,8 +372,6 @@ export class GaussianSplats extends SceneNode{
 
 		const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
 		Timer.timestamp(passEncoder, "gaussians-start");
-
-		this.updateUniforms(drawstate);
 
 		// let {passEncoder} = drawstate.pass;
 		passEncoder.setPipeline(pipeline);
@@ -383,7 +392,7 @@ export class GaussianSplats extends SceneNode{
 		});
 
 		passEncoder.setBindGroup(0, bindGroup);
-		passEncoder.draw(6 * this.numSplats);
+		passEncoder.draw(6 * renderCount);
 		passEncoder.end();
 		
 		Timer.timestamp(passEncoder, "gaussians-end");

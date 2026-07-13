@@ -46,6 +46,42 @@ http://127.0.0.1:8080/potree-net.html?cloud=./cale/metadata.json&project=NUME
 - salvare/reluare sesiune JSON;
 - export DXF 3D.
 
+## Mod hibrid Points / Gaussian Splats
+
+Aplicația are trei moduri de strat: `POINTS`, `SPLATS` și `HYBRID`. Un model
+Gaussian PLY local poate fi cerut prin URL:
+
+```text
+http://127.0.0.1:8080/potree-net.html?splat=./resources/models/model.ply&mode=HYBRID
+```
+
+Pentru un splat antrenat într-un cadru local, plasarea în Stereo 70 este explicită,
+în ordinea internă `Est,Nord,Cota`:
+
+```text
+&splatPosition=410573.637,309257.536,136.018&splatScale=1
+```
+
+Loaderul validează PLY `binary_little_endian`, încarcă progresiv prin HTTP Range,
+calculează bounding box-ul și nu sortează/desenează date care nu au fost încă
+urcate pe GPU. Dacă modelul lipsește sau încărcarea eșuează, aplicația revine la
+norul de puncte.
+
+Rendererul Gaussian din snapshot-ul Potree-Next rămâne experimental: parserul,
+streamingul, sortarea și controlul straturilor sunt integrate, dar imaginea finală
+Gaussian nu este încă validată pe configurația macOS/WebGPU curentă. Norul metric
+și digitizarea nu depind de acest strat experimental.
+
+## Teste
+
+```bash
+node --test tests/*.test.mjs
+```
+
+Suita acoperă contractul Stereo70, limitele reale ale norului, parserul Gaussian
+PLY, batch/range loading, bounding box-ul Gaussian, numărul sigur de splaturi GPU,
+plasarea Stereo70 și modurile Points/Splats/Hybrid.
+
 ## Convenția Stereo 70
 
 - intern și DXF: `X = Est`, `Y = Nord`, `Z = Cotă`;

@@ -392,7 +392,10 @@ export class PointCloudOctree extends SceneNode{
 
 	getBoundingBoxWorld(){
 
-		let bb = this.boundingBox;
+		// Potree's hierarchy box is cubic and may contain large empty regions.
+		// Prefer the position attribute's tight bounds for camera framing while
+		// keeping the hierarchy box untouched for traversal and LOD selection.
+		let bb = this.tightBoundingBox ?? this.boundingBox;
 		let min = bb.min;
 		let max = bb.max;
 
