@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ro">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Potree-Net — Digitizare Stereo 70</title>
+	<link rel="stylesheet" href="resources/potree.css">
+	<style>
+		html,body,#potree-net{width:100%;height:100%;margin:0;overflow:hidden;background:#111821}
+		#canvas{display:block;width:100%;height:100%}
+		#project-badge{position:absolute;left:12px;top:12px;z-index:10;padding:8px 11px;border-radius:7px;
+			background:rgba(16,21,28,.88);border:1px solid #364252;color:#e8eef5;font:12px Inter,Segoe UI,sans-serif}
+		#project-badge strong{display:block;font-size:14px}#cloud-status{color:#91a0b3;margin-top:2px}
+	</style>
+</head>
+<body>
+	<div id="potree-net">
+		<canvas id="canvas"></canvas>
+		<pre id="msg_resources" hidden></pre>
+		<pre id="msg_dbg" hidden></pre>
+		<div id="project-badge"><strong>11-CORNU · Cârcea</strong><span>Stereo 70 · ridicare 30.06.2026</span><div id="cloud-status">Inițializare WebGPU…</div></div>
+	</div>
+
+	<script type="importmap">
+	{
+		"imports": {
+			"potree": "./src/Potree.js",
+			"lazperf": "./libs/laz-perf/laz-perf.js",
+			"BinaryHeap": "./libs/BinaryHeap/BinaryHeap.js",
+			"tween": "./libs/tween/tween.esm.js",
+			"json5": "./libs/json5/json5.js",
+			"proj4": "./libs/proj4js/proj4-src.js",
+			"radix-sort-esm": "./libs/webgpu-radix-sort/dist/esm/radix-sort-esm.js"
+		}
+	}
+	</script>
+
+	<script type="module">
+		import {Potree, PotreeLoader, SplatType} from "potree";
+		import {Digitizer} from "./src/modules/digitizer/Digitizer.js";
+
+		let canvas = document.querySelector("#canvas");
+		let status = document.querySelector("#cloud-status");
+		let app = await Potree.init(canvas);
+		window.Potree = Potree;
+		window.potreeNet = app;
+
+		Potree.settings.edlEnabled = true;
+		Potree.settings.hqsEnabled = true;
+		Potree.settings.pointBudget = 6_000_000;
+		Potree.settings.attribute = "rgba";
+		Potree.settings.splatType = SplatType.POINTS;
+		Potree.settings.pointSize = 2;
+		Potree.settings.minNodeSize = 120;
+
+		let params = new URLSearchParams(location.search);
+		let cloudUrl = params.get("cloud") ?? "./resources/pointclouds/11-CORNU/metadata.json";
+		let projectName = params.get("project") ?? "11-CORNU";
+		let formatBytes = bytes => `${(bytes / 1_000_000_000).toFixed(2)} GB`;
+
+		async function verifyCloudFiles(metadataUrl){
+			let hierarchyUrl = new URL("hierarchy.bin", new URL(metadataUrl, location.href));
+			let octreeUrl = new URL("octree.bin", new URL(metadataUrl, location.href));
+			let hierarchyResponse = await fetch(hierarchyUrl, {headers: {Range: "bytes=0-21"}});
+			let hierarchy = new DataView(await hierarchyResponse.arrayBuffer());
+			if(hierarchy.byteLength < 22){
+				throw new Error("hierarchy.bin este incomplet");
+			}
+
+			let rootOffset = Number(hierarchy.getBigInt64(6, true));
+			let rootSize = Number(hierarchy.getBigInt64(14, true));
+			let minimumOctreeSize = rootOffset + rootSize;
+			let octreeResponse = await fetch(octreeUrl, {method: "HEAD"});
+			let availableOctreeSize = Number(octreeResponse.headers.get("content-length"));
+
+			if(availableOctreeSize < minimumOctreeSize){
+				throw new Error(`octree.bin se sincronizează: ${formatBytes(availableOctreeSize)} / minimum ${formatBytes(minimumOctreeSize)}`);
+			}
+		}
+
+		try{
+			status.textContent = "Verificare fișiere nor…";
+			await verifyCloudFiles(cloudUrl);
+			status.textContent = "Încărcare nor…";
+			let pointcloud = await PotreeLoader.load(cloudUrl);
+			pointcloud.name = projectName;
+			app.scene.root.children.push(pointcloud);
+			app.controls.zoomTo(pointcloud, {zoom: 1.05});
+			status.textContent = "Nor încărcat · digitizarea este activă";
+		}catch(error){
+			console.warn(error.message);
+			status.textContent = `Eroare nor: ${error.message}`;
+		}
+
+		window.digitizer = new Digitizer(app, {container: document.querySelector("#potree-net"), projectName});
+	</script>
+</body>
+</html>
