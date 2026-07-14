@@ -8,6 +8,7 @@
 	<style>
 		html,body,#potree-net{width:100%;height:100%;margin:0;overflow:hidden;background:#111821}
 		#canvas{display:block;width:100%;height:100%}
+		#gaussian-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:2;pointer-events:none;display:none}
 		#project-badge{position:absolute;left:12px;top:12px;z-index:10;padding:8px 11px;border-radius:7px;
 			background:rgba(16,21,28,.88);border:1px solid #364252;color:#e8eef5;font:12px Inter,Segoe UI,sans-serif}
 		#project-badge strong{display:block;font-size:14px}#cloud-status{color:#91a0b3;margin-top:2px}
@@ -24,6 +25,7 @@
 <body>
 	<div id="potree-net">
 		<canvas id="canvas"></canvas>
+		<canvas id="gaussian-canvas" aria-label="Strat Gaussian Splats"></canvas>
 		<pre id="msg_resources" hidden></pre>
 		<pre id="msg_dbg" hidden></pre>
 		<div id="project-badge"><strong>11-CORNU · Cârcea</strong><span>Stereo 70 · ridicare 30.06.2026</span><div id="cloud-status">Inițializare WebGPU…</div></div>
@@ -52,12 +54,15 @@
 	</script>
 
 	<script type="module">
-		import {Potree, PotreeLoader, SplatType} from "potree";
+		import {Potree, PotreeLoader, SplatType, Matrix4} from "potree";
 		import {Digitizer} from "./src/modules/digitizer/Digitizer.js";
 		import {HybridLayerController, HybridLayerMode} from "./src/modules/hybrid/HybridLayerController.js";
 		import {applySplatPlacement, parseSplatPlacement} from "./src/modules/hybrid/SplatPlacement.js";
+		import {createNativeGaussianRenderer} from "./src/modules/gaussians/native/NativeGaussianRenderer.js";
+		import {createNativeFixtureFromSplatData} from "./src/modules/gaussians/native/NativeGaussianAdapter.js";
 
 		let canvas = document.querySelector("#canvas");
+		let gaussianCanvas = document.querySelector("#gaussian-canvas");
 		let status = document.querySelector("#cloud-status");
 		let layerStatus = document.querySelector("#layer-status");
 		let layerButtons = [...document.querySelectorAll("[data-layer-mode]")];
@@ -68,6 +73,21 @@
 		});
 		window.Potree = Potree;
 		window.potreeNet = app;
+
+		let gaussianContext = gaussianCanvas.getContext("webgpu");
+		let gaussianFormat = navigator.gpu.getPreferredCanvasFormat();
+		gaussianContext.configure({
+			device: app.renderer.device,
+			format: gaussianFormat,
+			alphaMode: "premultiplied",
+			usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+		});
+		let nativeGaussianRenderer = createNativeGaussianRenderer({
+			device: app.renderer.device,
+			context: gaussianContext,
+			format: gaussianFormat,
+		});
+		window.nativeGaussianRenderer = nativeGaussianRenderer;
 
 		Potree.settings.edlEnabled = true;
 		Potree.settings.hqsEnabled = true;
@@ -81,6 +101,10 @@
 		let cloudUrl = params.get("cloud") ?? "./resources/pointclouds/11-CORNU/metadata.json";
 		let splatUrl = params.get("splat");
 		let projectName = params.get("project") ?? "11-CORNU";
+		let splatPixelScale = Number(params.get("splatPixelScale") ?? 1000);
+		if(!Number.isFinite(splatPixelScale) || splatPixelScale <= 0){
+			throw new RangeError("splatPixelScale trebuie să fie strict pozitiv");
+		}
 		let requestedMode = params.get("mode")?.toUpperCase();
 		if(!Object.hasOwn(HybridLayerMode, requestedMode)){
 			requestedMode = splatUrl ? HybridLayerMode.HYBRID : HybridLayerMode.POINTS;
@@ -90,6 +114,8 @@
 			mode: requestedMode,
 			onChange: state => {
 				layerStatus.textContent = state.status;
+				gaussianCanvas.style.display = state.effectiveMode === HybridLayerMode.SPLATS ||
+					state.effectiveMode === HybridLayerMode.HYBRID ? "block" : "none";
 				for(let button of layerButtons){
 					button.setAttribute("aria-pressed", String(button.dataset.layerMode === state.requestedMode));
 				}
@@ -98,6 +124,25 @@
 		window.hybridController = hybridController;
 		let loadedPointcloud = null;
 		let loadedSplat = null;
+		let nativeSplatUploaded = false;
+		const nativeViewProjection = new Matrix4();
+		Potree.events.onFrameEnd(() => {
+			if(!loadedSplat?.visible || !nativeSplatUploaded || gaussianCanvas.style.display === "none") return;
+			const dpr = Math.min(devicePixelRatio || 1, 2);
+			const width = Math.max(1, Math.floor(gaussianCanvas.clientWidth * dpr));
+			const height = Math.max(1, Math.floor(gaussianCanvas.clientHeight * dpr));
+			if(gaussianCanvas.width !== width || gaussianCanvas.height !== height){
+				gaussianCanvas.width = width;
+				gaussianCanvas.height = height;
+			}
+			loadedSplat.updateWorld();
+			nativeViewProjection.multiplyMatrices(app.camera.proj, app.camera.view).multiply(loadedSplat.world);
+			nativeGaussianRenderer.render({
+				viewProjection: new Float32Array(nativeViewProjection.elements),
+				viewport: [width, height],
+				clearColor: [0, 0, 0, 0],
+			});
+		});
 		for(let button of layerButtons){
 			button.addEventListener("click", () => {
 				const state = hybridController.setMode(button.dataset.layerMode);
@@ -163,16 +208,24 @@
 				loadedSplat = splat;
 				splat.name = `${projectName} · Gaussian Splats`;
 				applySplatPlacement(splat, placement);
-				app.scene.root.children.push(splat);
 				hybridController.setSplat(splat);
 				await splat.loading;
 				if(splat.loadError) throw splat.loadError;
+				const fixture = createNativeFixtureFromSplatData({
+					count: splat.numSplats,
+					uploadedCount: splat.numSplatsLoaded,
+					...splat.splatData,
+				}, {pixelScale: splatPixelScale});
+				nativeGaussianRenderer.upload(fixture);
+				nativeSplatUploaded = true;
+				layerStatus.textContent = `${hybridController.getState().status} · ${fixture.count.toLocaleString("ro-RO")} splaturi native`;
 				if(hybridController.getState().effectiveMode === HybridLayerMode.SPLATS){
 					app.controls.zoomTo(splat, {zoom: 1.05});
 				}
 				return splat;
 			}catch(error){
 				console.warn(error.message);
+				nativeSplatUploaded = false;
 				hybridController.setSplat(null);
 				layerStatus.textContent = `Eroare splats · ${hybridController.getState().status}`;
 				return null;

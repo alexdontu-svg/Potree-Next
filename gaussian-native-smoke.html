@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ro">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Potree-Net · Native Gaussian Smoke</title>
+	<style>
+		html,body,canvas{width:100%;height:100%;margin:0;background:#071019}canvas{display:block}
+		#status{position:fixed;left:12px;top:12px;color:#e8eef5;background:#10151ce8;border:1px solid #364252;
+			padding:8px 11px;border-radius:7px;font:13px system-ui;z-index:2}
+	</style>
+</head>
+<body>
+	<canvas id="gaussian"></canvas><div id="status">Inițializare WebGPU…</div>
+	<script type="module">
+		import {createNativeGaussianFixture} from "./src/modules/gaussians/native/NativeGaussianFixture.js";
+		import {createNativeGaussianRenderer} from "./src/modules/gaussians/native/NativeGaussianRenderer.js";
+
+		const canvas = document.querySelector("#gaussian");
+		const status = document.querySelector("#status");
+		const adapter = await navigator.gpu?.requestAdapter();
+		if(!adapter) throw new Error("WebGPU adapter indisponibil");
+		const device = await adapter.requestDevice();
+		const context = canvas.getContext("webgpu");
+		const format = navigator.gpu.getPreferredCanvasFormat();
+		context.configure({
+			device, format, alphaMode: "premultiplied",
+			usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+		});
+		const renderer = createNativeGaussianRenderer({device, context, format});
+		const count = Math.min(100, Math.max(1, Number(new URLSearchParams(location.search).get("count") ?? 25)));
+		const fixture = createNativeGaussianFixture({count, seed: 42});
+		fixture.positions.set([0, 0, 0], 0);
+		fixture.colors.set([1, 0.15, 0.05, 1], 0);
+		fixture.scales.set([32, 32], 0);
+		renderer.upload(fixture);
+
+		const render = () => {
+			const dpr = Math.min(devicePixelRatio || 1, 2);
+			canvas.width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+			canvas.height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+			return renderer.render({
+				viewport: [canvas.width, canvas.height],
+				clearColor: [0.027, 0.063, 0.098, 1],
+				readPixel: {x: Math.floor(canvas.width / 2), y: Math.floor(canvas.height / 2)},
+			});
+		};
+		const result = render();
+		const pixel = await result.pixel;
+		status.textContent = `WebGPU nativ · ${result.drawn} splaturi · pixel centru ${pixel.join(",")}`;
+		window.gaussianSmoke = {renderer, result: {drawn: result.drawn}, pixel};
+	</script>
+</body>
+</html>

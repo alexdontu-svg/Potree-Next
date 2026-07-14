@@ -67,10 +67,48 @@ calculează bounding box-ul și nu sortează/desenează date care nu au fost în
 urcate pe GPU. Dacă modelul lipsește sau încărcarea eșuează, aplicația revine la
 norul de puncte.
 
-Rendererul Gaussian din snapshot-ul Potree-Next rămâne experimental: parserul,
-streamingul, sortarea și controlul straturilor sunt integrate, dar imaginea finală
-Gaussian nu este încă validată pe configurația macOS/WebGPU curentă. Norul metric
-și digitizarea nu depind de acest strat experimental.
+Potree-Net folosește acum rendererul WebGPU nativ propriu, separat de pass-ul
+Gaussian experimental din snapshot-ul Potree-Next. Rendererul a fost validat pe
+macOS cu un fixture sintetic și cu modelul local de 432.402 splaturi. Testul minim
+cu pixel readback este disponibil la:
+
+```text
+http://127.0.0.1:8080/gaussian-native-smoke.html?count=25
+```
+
+Parametrul opțional `splatPixelScale` controlează conversia temporară a razelor PLY
+în pixeli (implicit `1000`). Implementarea curentă oferă quads instanțiate,
+distribuție Gaussian și alpha premultiplicat. Rotația/covarianța 3D, proiecția
+metrică a razei și sortarea după adâncime rămân etapa următoare; norul metric și
+digitizarea nu depind de acestea.
+
+## Dataset local și 3Dsurvey 3DP
+
+Fișierele mari rămân în afara Git. Manifestul versionabil este
+`config/data-assets.example.json`; căile locale se furnizează prin mediu:
+
+```bash
+export POTREE_NET_CORNU_3DP="$HOME/Desktop/11-CORNU_PROBE/11-CORNU.3Dp"
+export POTREE_NET_CORNU_OCTREE="$PWD/resources/pointclouds/11-CORNU"
+node tools/benchmarks/data-assets.mjs cornuOctree cornu3dp --hash
+```
+
+Proba read-only a containerului 3DP verifică blocurile MD5 atinse, citește schema
+fără a încărca fișierul de 4 GB în memorie și inventariază `GeometryData`:
+
+```bash
+node tools/three-dp/three-dp-probe.mjs "$POTREE_NET_CORNU_3DP"
+```
+
+Payloadul complet 3DP nu este încă decodat. Proba confirmă formatul, integritatea
+blocurilor, schema și existența tipurilor pentru layere, linii, cercuri, puncte și
+măsurători.
+
+Benchmarkul determinist pentru limita `uploaded-count` rulează astfel:
+
+```bash
+node tools/benchmarks/gaussian-uploaded-count.mjs --cases 1000 --iterations 100
+```
 
 ## Teste
 
@@ -79,8 +117,9 @@ node --test tests/*.test.mjs
 ```
 
 Suita acoperă contractul Stereo70, limitele reale ale norului, parserul Gaussian
-PLY, batch/range loading, bounding box-ul Gaussian, numărul sigur de splaturi GPU,
-plasarea Stereo70 și modurile Points/Splats/Hybrid.
+PLY, batch/range loading, bounding box-ul Gaussian, rendererul nativ și readback-ul,
+numărul sigur de splaturi GPU, proba 3DP, manifestul local-safe, plasarea Stereo70
+și modurile Points/Splats/Hybrid.
 
 ## Convenția Stereo 70
 
