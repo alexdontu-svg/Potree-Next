@@ -1,6 +1,6 @@
 
 import {Gradients, Utils} from "potree";
-import {PointMeasure, DistanceMeasure, HeightMeasure} from "potree";
+import {PointMeasure, DistanceMeasure, HeightMeasure, AreaMeasure} from "potree";
 let dir = new URL(import.meta.url + "/../").href;
 
 class Panel{
@@ -84,11 +84,11 @@ class Panel{
 			let elButton = document.createElement("input");
 			elButton.classList.add("potree_sidebar_button");
 			elButton.type = "button";
-			elButton.title = "Circle";
+			elButton.title = "Area";
 			elButton.style.backgroundImage = `url(${dir}/icons/circle.svg)`;
 
 			elButton.addEventListener("click", () => {
-				potree.measure.startMeasuring({});
+				potree.measure.startMeasuring(new AreaMeasure());
 			});
 
 			this.element.append(elButton);

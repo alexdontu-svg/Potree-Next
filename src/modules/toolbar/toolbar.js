@@ -1,6 +1,6 @@
 
 import {Gradients, Utils} from "potree";
-import {PointMeasure, DistanceMeasure, HeightMeasure} from "potree";
+import {PointMeasure, DistanceMeasure, HeightMeasure, AreaMeasure} from "potree";
 
 export async function installToolbar(element, potree){
 
@@ -140,13 +140,17 @@ export async function installToolbar(element, potree){
 			elMeasures.appendChild(elButton);
 		}
 
-		{ // CIRCLE
+		{ // AREA
 			let elButton = document.createElement("input");
 			elButton.classList.add("potree_toolbar_button");
 			elButton.type = "button";
-			elButton.title = "Circle Measure";
+			elButton.title = "Area Measure";
 			elButton.style.backgroundImage = `url(${dir}/icons/circle.svg)`;
-			
+
+			elButton.addEventListener("click", () => {
+				potree.measure.startMeasuring(new AreaMeasure());
+			});
+
 			elMeasures.appendChild(elButton);
 		}
 

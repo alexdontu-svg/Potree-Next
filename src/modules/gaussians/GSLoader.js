@@ -1,6 +1,63 @@
 
-import { Vector3 } from "../../Potree.js";
 import {GaussianSplats} from "./GaussianSplats.js";
+import {Vector3} from "../../math/Vector3.js";
+import {GaussianBoundsAccumulator} from "./GaussianBounds.js";
+import {computeGaussianBatchRange, parseGaussianPlyHeader} from "./GaussianPlyParser.js";
+
+const HEADER_INITIAL_END = 64 * 1024 - 1;
+const HEADER_MAX_END = 8 * 1024 * 1024 - 1;
+
+async function fetchHeader(url){
+	let lastByte = HEADER_INITIAL_END;
+
+	while(lastByte <= HEADER_MAX_END){
+		const response = await fetch(url, {headers: {Range: `bytes=0-${lastByte}`}});
+		if(!response.ok){
+			throw new Error(`Failed to load Gaussian PLY header (${response.status} ${response.statusText})`);
+		}
+
+		const buffer = await response.arrayBuffer();
+		try{
+			return parseGaussianPlyHeader(buffer);
+		}catch(error){
+			const incomplete = error instanceof Error && /header is incomplete/i.test(error.message);
+			const contentRange = response.headers.get("Content-Range");
+			const match = contentRange?.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+			const entireFileReceived = response.status === 200 || (match?.[3] !== "*" && Number(match?.[2]) + 1 >= Number(match?.[3]));
+
+			if(!incomplete || entireFileReceived || lastByte === HEADER_MAX_END){
+				throw error;
+			}
+		}
+
+		lastByte = Math.min((lastByte + 1) * 2 - 1, HEADER_MAX_END);
+	}
+
+	throw new Error("Gaussian PLY header exceeds the 8 MiB safety limit");
+}
+
+async function fetchBatch(url, range){
+	const response = await fetch(url, {headers: {Range: range.header}});
+	if(!response.ok){
+		throw new Error(`Failed to load Gaussian PLY bytes ${range.first}-${range.last} (${response.status} ${response.statusText})`);
+	}
+
+	const buffer = await response.arrayBuffer();
+	const expectedLength = range.last - range.first + 1;
+	let returnedFirst = response.status === 200 ? 0 : range.first;
+	const contentRange = response.headers.get("Content-Range");
+	const match = contentRange?.match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i);
+	if(match){
+		returnedFirst = Number(match[1]);
+	}
+
+	const offset = range.first - returnedFirst;
+	if(offset < 0 || offset + expectedLength > buffer.byteLength){
+		throw new Error(`Gaussian PLY server returned ${buffer.byteLength} bytes, but ${expectedLength} bytes were required for ${range.header}`);
+	}
+
+	return new DataView(buffer, offset, expectedLength);
+}
 
 export class GSLoader{
 
@@ -24,43 +81,16 @@ export class GSLoader{
 		let loader = new GSLoader();
 		let splats = new GaussianSplats(url);
 
-		{ // load metadata
-			let response = await fetch(url, {headers : { "Range": "bytes=0-2000"}});
-			let text = await response.text();
-
-			let endHeaderLocation = text.indexOf("end_header");
-			loader.firstContentByte = endHeaderLocation + 11;
-
-			let lines = text.split("\n");
-
-			let byteOffset = 0;
-			for(let i = 0; i < lines.length; i++){
-				let line = lines[i];
-				let tokens = line.split(" ");
-
-				if(tokens[0] === "element" && tokens[1] === "vertex"){
-					loader.numSplats = Number(tokens[2]);
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "x"){
-					loader.offset_position = byteOffset;
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "f_dc_0"){
-					loader.offset_color = byteOffset;
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "f_rest_0"){
-					loader.offset_harmonics = byteOffset;
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "opacity"){
-					loader.offset_opacity = byteOffset;
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "scale_0"){
-					loader.offset_scale = byteOffset;
-				}else if(tokens[0] === "property" && tokens[1] === "float" && tokens[2] == "rot_0"){
-					loader.offset_rotation = byteOffset;
-				}
-
-				if(tokens[0] === "property" && tokens[1] === "float"){
-					byteOffset += 4;
-				}
-			}
-
-			loader.bytesPerSplat += byteOffset;
-		}
+		const metadata = await fetchHeader(url);
+		loader.numSplats = metadata.vertexCount;
+		loader.firstContentByte = metadata.firstContentByte;
+		loader.bytesPerSplat = metadata.stride;
+		loader.offset_position = metadata.offsets.x;
+		loader.offset_color = metadata.offsets.f_dc_0;
+		loader.offset_harmonics = metadata.offsets.f_rest_0 ?? 0;
+		loader.offset_opacity = metadata.offsets.opacity;
+		loader.offset_scale = metadata.offsets.scale_0;
+		loader.offset_rotation = metadata.offsets.rot_0;
 
 		{ // load splat data
 			let numSplats = Math.floor(loader.numSplats / 1);
@@ -74,27 +104,30 @@ export class GSLoader{
 			let v_color     = new DataView(color);
 			let v_rotation  = new DataView(rotation);
 			let v_scale     = new DataView(scale);
+			const bounds = new GaussianBoundsAccumulator({nonFinite: "reject"});
+			const updateBoundingBox = () => {
+				const snapshot = bounds.snapshot();
+				splats.boundingBox.min.copy(new Vector3(...snapshot.min));
+				splats.boundingBox.max.copy(new Vector3(...snapshot.max));
+			};
 
-			let numSplatsLoaded = 0;
-
-			let BATCH_SIZE = 10_000;
+			const BATCH_SIZE = 10_000;
 			let loadBatch = async (firstIndex, count) => {
-				let first = loader.firstContentByte + firstIndex * loader.bytesPerSplat;
-				let last = first + count * loader.bytesPerSplat;
-				let response = await fetch(url, {headers : { "Range": `bytes=${first}-${last}`}});
-				let buffer = await response.arrayBuffer();
-				let view = new DataView(buffer);
+				const range = computeGaussianBatchRange(loader.firstContentByte, loader.bytesPerSplat, firstIndex, count);
+				const view = await fetchBatch(url, range);
 
 				// console.log(`loading splats ${firstIndex} to ${count}`);
 
 				for(let splatIndex = 0; splatIndex < count; splatIndex++){
 
-					let targetIndex = numSplatsLoaded;
+					let targetIndex = firstIndex + splatIndex;
+					const sourceOffset = splatIndex * loader.bytesPerSplat;
 
 					{ // POSITION
-						let x = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_position + 0, true);
-						let y = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_position + 4, true);
-						let z = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_position + 8, true);
+						let x = view.getFloat32(sourceOffset + metadata.offsets.x, true);
+						let y = view.getFloat32(sourceOffset + metadata.offsets.y, true);
+						let z = view.getFloat32(sourceOffset + metadata.offsets.z, true);
+						bounds.add(x, y, z, targetIndex);
 
 						v_positions.setFloat32(12 * targetIndex + 0, x, true);
 						v_positions.setFloat32(12 * targetIndex + 4, y, true);
@@ -102,12 +135,12 @@ export class GSLoader{
 					}
 
 					{ // COLOR & OPACITY
-						let R = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_color + 0, true);
-						let G = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_color + 4, true);
-						let B = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_color + 8, true);
+						let R = view.getFloat32(sourceOffset + metadata.offsets.f_dc_0, true);
+						let G = view.getFloat32(sourceOffset + metadata.offsets.f_dc_1, true);
+						let B = view.getFloat32(sourceOffset + metadata.offsets.f_dc_2, true);
 
 						let clamp = v => Math.min(Math.max(v, 0), 1);
-						let O = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_opacity, true);
+						let O = view.getFloat32(sourceOffset + metadata.offsets.opacity, true);
 						let opacity = (1.0 / (1.0 + Math.exp(-O)));
 
 						let CO = 0.28209479177387814; // spherical harmonics coefficient
@@ -122,9 +155,9 @@ export class GSLoader{
 					}
 
 					{ // SCALE
-						let sx = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_scale + 0, true);
-						let sy = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_scale + 4, true);
-						let sz = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_scale + 8, true);
+						let sx = view.getFloat32(sourceOffset + metadata.offsets.scale_0, true);
+						let sy = view.getFloat32(sourceOffset + metadata.offsets.scale_1, true);
+						let sz = view.getFloat32(sourceOffset + metadata.offsets.scale_2, true);
 
 						sx = Math.exp(sx);
 						sy = Math.exp(sy);
@@ -140,10 +173,10 @@ export class GSLoader{
 					}
 
 					{ // ROTATION
-						let w = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_rotation +  0, true);
-						let x = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_rotation +  4, true);
-						let y = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_rotation +  8, true);
-						let z = view.getFloat32(splatIndex * loader.bytesPerSplat + loader.offset_rotation + 12, true);
+						let w = view.getFloat32(sourceOffset + metadata.offsets.rot_0, true);
+						let x = view.getFloat32(sourceOffset + metadata.offsets.rot_1, true);
+						let y = view.getFloat32(sourceOffset + metadata.offsets.rot_2, true);
+						let z = view.getFloat32(sourceOffset + metadata.offsets.rot_3, true);
 
 						let length = Math.sqrt(x * x + y * y + z * z + w * w);
 
@@ -153,23 +186,27 @@ export class GSLoader{
 						v_rotation.setFloat32(16 * targetIndex + 12, w / length, true);
 					}
 
-					numSplatsLoaded++;
 				}
 
-				splats.numSplatsLoaded = numSplatsLoaded;
-
-				if(numSplatsLoaded < numSplats){
-					let first = numSplatsLoaded;
-					let count = Math.min(numSplats - numSplatsLoaded, BATCH_SIZE);
-					loadBatch(numSplatsLoaded, count);
-				}
+				updateBoundingBox();
+				splats.numSplatsLoaded = firstIndex + count;
 			};
 
-			loadBatch(0, BATCH_SIZE);
-
 			splats.numSplats = numSplats;
-			splats.numSplatsLoaded = numSplatsLoaded;
+			splats.numSplatsLoaded = 0;
 			splats.splatData = {positions, color, rotation, scale };
+			splats.loadError = null;
+			updateBoundingBox();
+			splats.loading = (async () => {
+				for(let firstIndex = 0; firstIndex < numSplats; firstIndex += BATCH_SIZE){
+					const count = Math.min(BATCH_SIZE, numSplats - firstIndex);
+					await loadBatch(firstIndex, count);
+				}
+			})().catch(error => {
+				splats.loadError = error;
+				splats.dispatcher.dispatch("error", {splats, error});
+				console.error(`Failed to stream Gaussian splats from ${url}`, error);
+			});
 		}
 
 		return splats;

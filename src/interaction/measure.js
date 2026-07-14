@@ -11,9 +11,10 @@ export class Measure{
 		this.markers = [];
 		this.markers_highlighted = [];
 		this.requiredMarkers = 1;
+		this.minimumMarkers = 1;
 		this.maxMarkers = 1;
 		this.showEdges = true;
-		// this.showEdgesClosed = false;
+		this.showEdgesClosed = false;
 
 		counter++;
 	}
@@ -65,11 +66,81 @@ export class DistanceMeasure extends Measure{
 	constructor(){
 		super();
 		this.requiredMarkers = 0;
+		this.minimumMarkers = 2;
 		this.maxMarkers = 100;
 	}
 
 	addMarker(position){
 		this.markers.push(position.clone());
+	}
+
+	getTotalDistance(){
+		let distance = 0;
+
+		for(let i = 1; i < this.markers.length; i++){
+			distance += this.markers[i - 1].distanceTo(this.markers[i]);
+		}
+
+		return distance;
+	}
+
+	toHtml(prefix = ""){
+		return `
+			${super.toHtml(prefix)}
+			<div style="text-align: right"><b>Total:</b> ${this.getTotalDistance().toFixed(3)} m</div>
+		`;
+	}
+
+};
+
+export class AreaMeasure extends Measure{
+
+	constructor(){
+		super();
+		this.requiredMarkers = 0;
+		this.minimumMarkers = 3;
+		this.maxMarkers = 100;
+		this.showEdgesClosed = true;
+	}
+
+	getArea(){
+		if(this.markers.length < 3){
+			return 0;
+		}
+
+		let area = 0;
+
+		for(let i = 0; i < this.markers.length; i++){
+			let current = this.markers[i];
+			let next = this.markers[(i + 1) % this.markers.length];
+			area += current.x * next.y - next.x * current.y;
+		}
+
+		return Math.abs(area) * 0.5;
+	}
+
+	getPerimeter(){
+		if(this.markers.length < 2){
+			return 0;
+		}
+
+		let perimeter = 0;
+
+		for(let i = 0; i < this.markers.length; i++){
+			let current = this.markers[i];
+			let next = this.markers[(i + 1) % this.markers.length];
+			perimeter += current.distanceTo(next);
+		}
+
+		return perimeter;
+	}
+
+	toHtml(prefix = ""){
+		return `
+			${super.toHtml(prefix)}
+			<div style="text-align: right"><b>Perimeter:</b> ${this.getPerimeter().toFixed(3)} m</div>
+			<div style="text-align: right"><b>Area (XY):</b> ${this.getArea().toFixed(3)} m²</div>
+		`;
 	}
 
 };
@@ -158,6 +229,14 @@ export class MeasureTool{
 						new Vector3(255, 0, 0),
 					);
 				}
+
+				if(measure.showEdgesClosed && measure.markers.length > 2){
+					this.renderer.drawLine(
+						measure.markers[measure.markers.length - 1],
+						measure.markers[0],
+						new Vector3(255, 0, 0),
+					);
+				}
 			}
 
 			// DRAW HEIGHT MEASURE
@@ -231,7 +310,11 @@ export class MeasureTool{
 
 			}else if(e.event.button === MouseCodes.RIGHT){
 
-				if(measure.requiredMarkers && measure.markers.length !== measure.requiredMarkers){
+				let hasTooFewMarkers = measure.markers.length < measure.minimumMarkers;
+				let hasWrongRequiredCount = measure.requiredMarkers
+					&& measure.markers.length !== measure.requiredMarkers;
+
+				if(hasTooFewMarkers || hasWrongRequiredCount){
 					this.measures.pop();
 				}
 

@@ -106,7 +106,9 @@
 
 
 	// let splats2 = await GSLoader.load("./resources/models/gardentable.ply");
-	let splats2 = await GSLoader.load("https://users.cg.tuwien.ac.at/mschuetz/permanent/potree-next/resources/gardentable.ply");
+	let splatUrl = new URLSearchParams(location.search).get("splat")
+		?? "https://users.cg.tuwien.ac.at/mschuetz/permanent/potree-next/resources/gardentable.ply";
+	let splats2 = await GSLoader.load(splatUrl);
 	// let splats2 = await GSLoader.load("./resources/models/garden.ply");
 	scene.root.children.push(splats2);
 
